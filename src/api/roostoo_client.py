@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import time
 from typing import Any, Dict, Optional
 
@@ -20,12 +21,14 @@ class RoostooClient:
         base_url: str = "https://mock-api.roostoo.com",
         timeout: float = 10.0,
         session: Optional[requests.Session] = None,
+        logger: Optional[logging.Logger] = None,
     ) -> None:
         self.api_key = api_key
         self.secret_key = secret_key
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = session or requests.Session()
+        self.logger = logger
 
     @staticmethod
     def _timestamp_ms() -> str:
@@ -66,12 +69,19 @@ class RoostooClient:
         if signed:
             headers, payload, _ = self._get_signed_headers(payload)
 
+        if self.logger:
+            self.logger.info(f"GET {path} | signed={signed} | params={payload}")
+
         resp = self.session.get(
             f"{self.base_url}{path}",
             params=payload,
             headers=headers,
             timeout=self.timeout,
         )
+
+        if self.logger:
+            self.logger.info(f"GET {path} | status={resp.status_code} | response={resp.text}")
+
         self._raise_for_http_error(resp)
         return resp.json()
 
@@ -86,12 +96,19 @@ class RoostooClient:
             headers["Content-Type"] = "application/x-www-form-urlencoded"
             data = total_params
 
+        if self.logger:
+            self.logger.info(f"POST {path} | signed={signed} | payload={body_payload}")
+
         resp = self.session.post(
             f"{self.base_url}{path}",
             headers=headers,
             data=data,
             timeout=self.timeout,
         )
+
+        if self.logger:
+            self.logger.info(f"POST {path} | status={resp.status_code} | response={resp.text}")
+
         self._raise_for_http_error(resp)
         return resp.json()
 
