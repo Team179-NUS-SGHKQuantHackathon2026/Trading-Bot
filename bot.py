@@ -9,3 +9,9 @@ client = RoostooClient(
 print(client.get_server_time())
 print(client.get_exchange_info())
 print(client.get_ticker("BTC/USD"))
+print(client.get_balance())
+print(client.get_pending_count())
+
+# print(client.place_order("BNB/USD", "BUY", 1, order_type="MARKET"))
+# print(client.query_order(pair="BNB/USD", pending_only=False))
+# print(client.cancel_order(pair="BNB/USD"))

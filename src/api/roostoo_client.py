@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 from typing import Any, Dict, Optional
 
@@ -34,10 +36,60 @@ class RoostooClient:
         pair_or_coin = pair_or_coin.strip().upper()
         return pair_or_coin if "/" in pair_or_coin else f"{pair_or_coin}/USD"
 
-    def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _get_signed_headers(self, payload: Optional[Dict[str, Any]] = None):
+        """
+        Generate signed headers and totalParams for RCL_TopLevelCheck endpoints.
+        """
+        payload = dict(payload or {})
+        payload["timestamp"] = self._timestamp_ms()
+
+        sorted_keys = sorted(payload.keys())
+        total_params = "&".join(f"{k}={payload[k]}" for k in sorted_keys)
+
+        signature = hmac.new(
+            self.secret_key.encode("utf-8"),
+            total_params.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        headers = {
+            "RST-API-KEY": self.api_key,
+            "MSG-SIGNATURE": signature,
+        }
+
+        return headers, payload, total_params
+
+    def _get(self, path: str, params: Optional[Dict[str, Any]] = None, signed: bool = False) -> Dict[str, Any]:
+        payload = dict(params or {})
+        headers = {}
+
+        if signed:
+            headers, payload, _ = self._get_signed_headers(payload)
+
         resp = self.session.get(
             f"{self.base_url}{path}",
-            params=params or {},
+            params=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        self._raise_for_http_error(resp)
+        return resp.json()
+
+
+    def _post(self, path: str, payload: Optional[Dict[str, Any]] = None, signed: bool = False) -> Dict[str, Any]:
+        body_payload = dict(payload or {})
+        headers = {}
+        data: Any = body_payload
+
+        if signed:
+            headers, body_payload, total_params = self._get_signed_headers(body_payload)
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            data = total_params
+
+        resp = self.session.post(
+            f"{self.base_url}{path}",
+            headers=headers,
+            data=data,
             timeout=self.timeout,
         )
         self._raise_for_http_error(resp)
@@ -55,6 +107,7 @@ class RoostooClient:
                 pass
             raise RoostooHTTPError(f"HTTP {resp.status_code}: {text}") from exc
 
+    # Public Endpoints
     def get_server_time(self) -> Dict[str, Any]:
         return self._get("/v3/serverTime")
 
@@ -66,3 +119,82 @@ class RoostooClient:
         if pair:
             params["pair"] = self._normalize_pair(pair)
         return self._get("/v3/ticker", params)
+
+    # Signed Endpoints
+    def get_balance(self) -> Dict[str, Any]:
+        return self._get("/v3/balance", signed=True)
+
+    def get_pending_count(self) -> Dict[str, Any]:
+        return self._get("/v3/pending_count", signed=True)
+
+    def place_order(
+        self,
+        pair: str,
+        side: str,
+        quantity: float,
+        *,
+        order_type: str = "MARKET",
+        price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        side = side.upper()
+        order_type = order_type.upper()
+
+        if side not in {"BUY", "SELL"}:
+            raise ValueError("side must be BUY or SELL")
+        if order_type not in {"MARKET", "LIMIT"}:
+            raise ValueError("order_type must be MARKET or LIMIT")
+        if order_type == "LIMIT" and price is None:
+            raise ValueError("LIMIT order requires price")
+
+        payload: Dict[str, Any] = {
+            "pair": self._normalize_pair(pair),
+            "side": side,
+            "type": order_type,
+            "quantity": str(quantity),
+        }
+        if price is not None:
+            payload["price"] = str(price)
+
+        return self._post("/v3/place_order", payload, signed=True)
+
+    def query_order(
+        self,
+        order_id: Optional[int] = None,
+        pair: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        pending_only: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+
+        if order_id is not None:
+            if pair is not None or offset is not None or limit is not None or pending_only is not None:
+                raise ValueError("when order_id is provided, no other optional parameter is allowed")
+            payload["order_id"] = str(order_id)
+        else:
+            if pair is not None:
+                payload["pair"] = self._normalize_pair(pair)
+            if offset is not None:
+                payload["offset"] = str(offset)
+            if limit is not None:
+                payload["limit"] = str(limit)
+            if pending_only is not None:
+                payload["pending_only"] = "TRUE" if pending_only else "FALSE"
+
+        return self._post("/v3/query_order", payload, signed=True)
+
+    def cancel_order(
+        self,
+        order_id: Optional[int] = None,
+        pair: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if order_id is not None and pair is not None:
+            raise ValueError("only one of order_id or pair is allowed")
+
+        payload: Dict[str, Any] = {}
+        if order_id is not None:
+            payload["order_id"] = str(order_id)
+        elif pair is not None:
+            payload["pair"] = self._normalize_pair(pair)
+
+        return self._post("/v3/cancel_order", payload, signed=True)
