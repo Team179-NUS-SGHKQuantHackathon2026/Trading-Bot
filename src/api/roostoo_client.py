@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import time
+from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, Optional
 
 import requests
@@ -30,6 +31,8 @@ class RoostooClient:
         self.session = session or requests.Session()
         self.logger = logger
 
+        self._exchange_info_cache: Optional[Dict[str, Any]] = None
+
     @staticmethod
     def _timestamp_ms() -> str:
         return str(int(time.time() * 1000))
@@ -38,6 +41,70 @@ class RoostooClient:
     def _normalize_pair(pair_or_coin: str) -> str:
         pair_or_coin = pair_or_coin.strip().upper()
         return pair_or_coin if "/" in pair_or_coin else f"{pair_or_coin}/USD"
+    
+    def refresh_exchange_info_cache(self) -> Dict[str, Any]:
+        data = self.get_exchange_info()
+        self._exchange_info_cache = data
+        return data
+
+    def get_symbol_info(self, pair: str) -> Dict[str, Any]:
+        normalized_pair = self._normalize_pair(pair)
+
+        if self._exchange_info_cache is None:
+            self.refresh_exchange_info_cache()
+
+        trade_pairs = self._exchange_info_cache.get("TradePairs", {})
+        if normalized_pair not in trade_pairs:
+            raise ValueError(f"Pair not found in exchangeInfo: {normalized_pair}")
+
+        return trade_pairs[normalized_pair]
+
+    @staticmethod
+    def _round_down_by_precision(value: Decimal, precision: int) -> Decimal:
+        quantum = Decimal("1").scaleb(-precision)
+        return value.quantize(quantum, rounding=ROUND_DOWN)
+
+    def round_price(self, pair: str, price: float | str | Decimal) -> str:
+        info = self.get_symbol_info(pair)
+        precision = int(info["PricePrecision"])
+        rounded = self._round_down_by_precision(Decimal(str(price)), precision)
+        return format(rounded, f".{precision}f")
+
+    def round_quantity(self, pair: str, quantity: float | str | Decimal) -> str:
+        info = self.get_symbol_info(pair)
+        precision = int(info["AmountPrecision"])
+        rounded = self._round_down_by_precision(Decimal(str(quantity)), precision)
+        return format(rounded, f".{precision}f")
+
+    def is_tradable(self, pair: str) -> bool:
+        info = self.get_symbol_info(pair)
+        return bool(info["CanTrade"])
+
+    def validate_limit_order(
+        self,
+        pair: str,
+        price: float | str | Decimal,
+        quantity: float | str | Decimal,
+    ) -> None:
+        info = self.get_symbol_info(pair)
+
+        if not info["CanTrade"]:
+            raise ValueError(f"{self._normalize_pair(pair)} is not tradable")
+
+        rounded_price = Decimal(self.round_price(pair, price))
+        rounded_quantity = Decimal(self.round_quantity(pair, quantity))
+        min_order = Decimal(str(info["MiniOrder"]))
+
+        if rounded_price <= 0:
+            raise ValueError("Rounded price must be > 0")
+        if rounded_quantity <= 0:
+            raise ValueError("Rounded quantity must be > 0")
+
+        notional = rounded_price * rounded_quantity
+        if notional <= min_order:
+            raise ValueError(
+                f"Order value {notional} must be > MiniOrder {min_order}"
+            )
 
     def _get_signed_headers(self, payload: Optional[Dict[str, Any]] = None):
         """
@@ -155,22 +222,30 @@ class RoostooClient:
     ) -> Dict[str, Any]:
         side = side.upper()
         order_type = order_type.upper()
+        normalized_pair = self._normalize_pair(pair)
 
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
         if order_type not in {"MARKET", "LIMIT"}:
             raise ValueError("order_type must be MARKET or LIMIT")
-        if order_type == "LIMIT" and price is None:
-            raise ValueError("LIMIT order requires price")
+
+        if not self.is_tradable(normalized_pair):
+            raise ValueError(f"{normalized_pair} is not tradable")
+
+        rounded_quantity = self.round_quantity(normalized_pair, quantity)
 
         payload: Dict[str, Any] = {
-            "pair": self._normalize_pair(pair),
+            "pair": normalized_pair,
             "side": side,
             "type": order_type,
-            "quantity": str(quantity),
+            "quantity": rounded_quantity,
         }
-        if price is not None:
-            payload["price"] = str(price)
+
+        if order_type == "LIMIT":
+            if price is None:
+                raise ValueError("LIMIT order requires price")
+            self.validate_limit_order(normalized_pair, price, quantity)
+            payload["price"] = self.round_price(normalized_pair, price)
 
         return self._post("/v3/place_order", payload, signed=True)
 
