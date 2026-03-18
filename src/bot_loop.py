@@ -5,7 +5,7 @@ from src.api.roostoo_client import RoostooClient
 from src.logger import get_logger
 
 
-def run_polling_loop(client: RoostooClient, pairs: Sequence[str], interval: int = 10):
+def run_polling_loop(client: RoostooClient, pairs: Sequence[str], interval: int):
     logger = get_logger()
     latest_prices = {}
 

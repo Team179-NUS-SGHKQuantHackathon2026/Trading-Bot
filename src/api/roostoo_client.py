@@ -19,7 +19,7 @@ class RoostooClient:
         self,
         api_key: str,
         secret_key: str,
-        base_url: str = "https://mock-api.roostoo.com",
+        base_url: str,
         timeout: float = 10.0,
         session: Optional[requests.Session] = None,
         logger: Optional[logging.Logger] = None,
