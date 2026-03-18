@@ -1,6 +1,7 @@
 from src.api.roostoo_client import RoostooClient
 from src.config import ROOSTOO_API_KEY, ROOSTOO_SECRET_KEY
 from src.logger import get_logger
+from src.bot_loop import run_polling_loop
 
 logger = get_logger()
 
@@ -25,6 +26,11 @@ def main():
     # print(client.query_order(pair="BNB/USD", pending_only=False))
     # print(client.cancel_order(pair="BNB/USD"))
 
+    run_polling_loop(
+        client,
+        pairs=["BTC/USD", "ETH/USD"],
+        interval=10,
+    )
 
 if __name__ == "__main__":
     main()
